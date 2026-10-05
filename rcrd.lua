@@ -1,3 +1,4 @@
+--
 -- BUNDLED SCRIPT
 
 local _MODULES = {}
@@ -1217,9 +1218,13 @@ local function build(ctx)
         if not HOLD_METHODS[holdIndex].available() then nextHoldMethod() end
 
         local holding = false
-        -- verifying the current method: the bar has momentum, so it counts as working as soon as
-        -- it rises in any frame while held (not just "higher than where it was pressed")
-        local pressAt, pressY, lastY, rose
+        -- Verifying the current method, in screen pixels (works whether the bar moves by Scale or
+        -- Offset). The bar has momentum, so the test is acceleration: while held, its per-frame
+        -- movement must turn more upward than it was just before the press.
+        local function barY() return bar.AbsolutePosition.Y end
+        local prevY = barY()
+        local frameDy = 0          -- last per-frame movement (pixels, + = down)
+        local pressAt, dyAtPress, rose
         local function setHold(state)
             if holding == state then return end
             holding = state
@@ -1227,8 +1232,7 @@ local function build(ctx)
             local ok, err = pcall(m.set, tool, state)
             if not ok then Util.log(("fish minigame: %s errored (%s)"):format(m.name, tostring(err))) end
             if state then
-                pressAt, pressY = os.clock(), bar.Position.Y.Scale
-                lastY, rose = pressY, false
+                pressAt, dyAtPress, rose = os.clock(), frameDy, false
             else
                 pressAt = nil
             end
@@ -1238,24 +1242,28 @@ local function build(ctx)
         while Win.Flags["AutoFish"] and not State.isBuying and c.Bobble and bill.Parent
             and tick() < reelDeadline do
             -- verify: while holding, the bar must rise (Y.Scale goes down) unless it's already at the top
+            local y = barY()
+            frameDy = y - prevY
+            prevY = y
             if holding and not holdConfirmed and pressAt then
-                local y = bar.Position.Y.Scale
-                if y < lastY - 0.001 then rose = true end
-                lastY = y
-            end
-            if holding and not holdConfirmed and pressAt and (rose or os.clock() - pressAt >= VERIFY_TIME) then
+                if frameDy < dyAtPress - 0.5 or frameDy < -0.5 then rose = true end
+                local topY = bill.Frame.AbsolutePosition.Y
+                local atTop = y <= topY + 2
                 if rose then
                     holdConfirmed = true
                     Util.log("fish minigame: using " .. HOLD_METHODS[holdIndex].name)
-                elseif pressY > 0.05 then
+                elseif not atTop and os.clock() - pressAt >= VERIFY_TIME then
                     local failed = HOLD_METHODS[holdIndex].name
                     setHold(false)
                     if nextHoldMethod() then
                         Util.log(("fish minigame: %s had no effect, trying %s"):format(failed, HOLD_METHODS[holdIndex].name))
                     else
-                        Util.log("fish minigame: no input method works on this executor")
-                        holdIndex = 1
-                        break
+                        -- none passed the test: keep playing with the first one instead of giving up
+                        holdIndex, holdConfirmed = 1, true
+                        for i, m in ipairs(HOLD_METHODS) do
+                            if m.available() then holdIndex = i; break end
+                        end
+                        Util.log("fish minigame: couldn't verify any input method, keeping " .. HOLD_METHODS[holdIndex].name)
                     end
                 end
             end
@@ -4381,8 +4389,6 @@ return build
 
 end
 
--- MAIN SCRIPT
--- main.lua — Entry point / Load
 
 -- WAIT FOR GAME
 if not game:IsLoaded() then game.Loaded:Wait() end
